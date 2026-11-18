@@ -1,6 +1,6 @@
 # raftkv (Mini-etcd)
 
-[![CI](https://github.com/AYASSEU/Mini-etcd/actions/workflows/ci.yml/badge.svg)](https://github.com/AYASSEU/Mini-etcd/actions/workflows/ci.yml)
+[![CI](https://github.com/didrarayyan/Mini-etcd/actions/workflows/ci.yml/badge.svg)](https://github.com/didrarayyan/Mini-etcd/actions/workflows/ci.yml)
 
 A deterministic Raft consensus engine and replicated key-value store written in Rust, structured around a pure state machine (`raft-core`), a crash-safe write-ahead log (`raftkv-wal`), a deterministic fault-injecting simulator (`raft-sim`), and gRPC daemon and CLI binaries (`raftkvd`, `raftkvctl`).
 
