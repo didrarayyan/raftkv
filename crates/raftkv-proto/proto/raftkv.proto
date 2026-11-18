@@ -1,0 +1,178 @@
+syntax = "proto3";
+package raftkv.v1;
+
+enum Consistency {
+  CONSISTENCY_LINEARIZABLE = 0;
+  CONSISTENCY_STALE = 1;
+}
+
+enum Role {
+  ROLE_FOLLOWER = 0;
+  ROLE_PRE_CANDIDATE = 1;
+  ROLE_CANDIDATE = 2;
+  ROLE_LEADER = 3;
+}
+
+service Kv {
+  rpc Put(PutRequest) returns (PutResponse);
+  rpc Get(GetRequest) returns (GetResponse);
+  rpc Delete(DeleteRequest) returns (DeleteResponse);
+  rpc Range(RangeRequest) returns (RangeResponse);
+  rpc CompareAndSwap(CasRequest) returns (CasResponse);
+}
+
+service Admin {
+  rpc Status(StatusRequest) returns (StatusResponse);
+}
+
+service Raft {
+  rpc Step(RaftMessage) returns (Ack);
+  rpc InstallSnapshot(stream SnapshotChunk) returns (Ack);
+}
+
+message KeyValue {
+  bytes key = 1;
+  bytes value = 2;
+}
+
+message PutRequest {
+  uint64 client_id = 1;
+  uint64 request_id = 2;
+  bytes key = 3;
+  bytes value = 4;
+}
+
+message PutResponse {
+  uint64 log_index = 1;
+}
+
+message DeleteRequest {
+  uint64 client_id = 1;
+  uint64 request_id = 2;
+  bytes key = 3;
+}
+
+message DeleteResponse {
+  bool existed = 1;
+  uint64 log_index = 2;
+}
+
+message CasRequest {
+  uint64 client_id = 1;
+  uint64 request_id = 2;
+  bytes key = 3;
+  optional bytes expected = 4;
+  bytes value = 5;
+}
+
+message CasResponse {
+  bool swapped = 1;
+  optional bytes current = 2;
+  uint64 log_index = 3;
+}
+
+message GetRequest {
+  bytes key = 1;
+  Consistency consistency = 2;
+}
+
+message GetResponse {
+  optional bytes value = 1;
+  uint64 applied_index = 2;
+}
+
+message RangeRequest {
+  bytes start = 1;
+  bytes end = 2;
+  uint32 limit = 3;
+  Consistency consistency = 4;
+}
+
+message RangeResponse {
+  repeated KeyValue kvs = 1;
+  bool more = 2;
+  uint64 applied_index = 3;
+}
+
+message StatusRequest {}
+
+message StatusResponse {
+  uint64 node_id = 1;
+  Role role = 2;
+  uint64 term = 3;
+  uint64 leader_id = 4;
+  uint64 commit_index = 5;
+  uint64 applied_index = 6;
+  uint64 last_log_index = 7;
+  uint64 snapshot_index = 8;
+  repeated PeerProgress peers = 9;
+}
+
+message PeerProgress {
+  uint64 node_id = 1;
+  uint64 match_index = 2;
+  uint64 next_index = 3;
+  bool recently_active = 4;
+}
+
+message Ack {}
+
+message SnapshotChunk {
+  uint64 from = 1;
+  uint64 to = 2;
+  uint64 term = 3;
+  uint64 index = 4;
+  uint64 snapshot_term = 5;
+  bytes data = 6;
+}
+
+message Entry {
+  uint64 term = 1;
+  uint64 index = 2;
+  bool noop = 3;
+  bytes data = 4;
+}
+
+message RaftMessage {
+  uint64 from = 1;
+  uint64 to = 2;
+  uint64 term = 3;
+  oneof body {
+    VoteRequest pre_vote = 10;
+    VoteResponse pre_vote_response = 11;
+    VoteRequest request_vote = 12;
+    VoteResponse request_vote_response = 13;
+    AppendRequest append_entries = 14;
+    AppendResponse append_entries_response = 15;
+    SnapshotResponse install_snapshot_response = 16;
+  }
+}
+
+message VoteRequest {
+  uint64 last_index = 1;
+  uint64 last_term = 2;
+}
+
+message VoteResponse {
+  bool granted = 1;
+}
+
+message AppendRequest {
+  uint64 prev_index = 1;
+  uint64 prev_term = 2;
+  repeated Entry entries = 3;
+  uint64 leader_commit = 4;
+  uint64 read_ctx = 5;
+}
+
+message SnapshotResponse {
+  uint64 match_index = 1;
+}
+
+message AppendResponse {
+  bool accepted = 1;
+  uint64 match_index = 2;
+  uint64 conflict_index = 3;
+  uint64 conflict_term = 4;
+  uint64 read_ctx = 5;
+}
