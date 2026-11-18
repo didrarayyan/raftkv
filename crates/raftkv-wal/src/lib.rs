@@ -15,3 +15,14 @@
 //!   or continuing after a failed fsync.
 
 #![forbid(unsafe_code)]
+
+mod format;
+mod fs;
+#[cfg(test)]
+mod tests;
+mod wal;
+
+#[cfg(any(test, feature = "fault-injection"))]
+pub use fs::{FaultFile, FaultFs};
+pub use fs::{Fs, FsFile, StdFile, StdFs};
+pub use wal::{Batch, Wal, WalError, WalOptions};
