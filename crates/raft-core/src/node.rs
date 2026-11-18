@@ -615,9 +615,7 @@ impl RaftNode {
         let leader_alive = self.role == Role::Leader
             || (self.leader_id.is_some()
                 && self.ticks_since_leader_contact < self.cfg.election_ticks);
-        let granted = proposed_term >= self.term
-            && !leader_alive
-            && self.log.is_up_to_date(last_index, last_term);
+        let granted = !leader_alive && self.log.is_up_to_date(last_index, last_term);
         let reply_term = if granted { proposed_term } else { self.term };
         self.outbox.push(Message {
             from: self.cfg.id,

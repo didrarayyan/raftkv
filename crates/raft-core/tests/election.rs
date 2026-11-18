@@ -416,3 +416,91 @@ fn leader_steps_down_without_quorum() {
     assert_eq!(isolated_leader.status().term, term_before);
     assert_eq!(isolated_leader.status().leader_id, None);
 }
+
+#[test]
+fn prevote_succeeds_when_voter_has_higher_term_but_older_log() {
+    let peers = vec![NodeId(1), NodeId(2), NodeId(3)];
+    let mut voter_higher_term = RaftNode::new(
+        Config::with_defaults(NodeId(1), peers.clone(), 1),
+        Recovered {
+            hard_state: HardState {
+                term: Term(7),
+                voted_for: None,
+                commit: Index(1),
+            },
+            snapshot: None,
+            entries: vec![Entry {
+                term: Term(1),
+                index: Index(1),
+                payload: Payload::Noop,
+            }],
+        },
+    )
+    .unwrap();
+
+    let mut candidate_newer_log = RaftNode::new(
+        Config::with_defaults(NodeId(3), peers, 3),
+        Recovered {
+            hard_state: HardState {
+                term: Term(5),
+                voted_for: None,
+                commit: Index(2),
+            },
+            snapshot: None,
+            entries: vec![
+                Entry {
+                    term: Term(1),
+                    index: Index(1),
+                    payload: Payload::Noop,
+                },
+                Entry {
+                    term: Term(5),
+                    index: Index(2),
+                    payload: Payload::Command(Bytes::from_static(b"newer")),
+                },
+            ],
+        },
+    )
+    .unwrap();
+
+    // Let both nodes run without node 2; node 3 must learn term 7 and win election cleanly.
+    for _ in 0..80 {
+        voter_higher_term.tick();
+        candidate_newer_log.tick();
+        for _ in 0..4 {
+            let mut msgs_for_1 = Vec::new();
+            let mut msgs_for_3 = Vec::new();
+            while let Some(r) = voter_higher_term.ready() {
+                for m in r.messages {
+                    if m.to == NodeId(3) {
+                        msgs_for_3.push(m);
+                    }
+                }
+                voter_higher_term.advance();
+            }
+            while let Some(r) = candidate_newer_log.ready() {
+                for m in r.messages {
+                    if m.to == NodeId(1) {
+                        msgs_for_1.push(m);
+                    }
+                }
+                candidate_newer_log.advance();
+            }
+            if msgs_for_1.is_empty() && msgs_for_3.is_empty() {
+                break;
+            }
+            for m in msgs_for_1 {
+                voter_higher_term.step(m);
+            }
+            for m in msgs_for_3 {
+                candidate_newer_log.step(m);
+            }
+        }
+        if candidate_newer_log.status().role == Role::Leader {
+            break;
+        }
+    }
+
+    assert_eq!(candidate_newer_log.status().role, Role::Leader);
+    assert!(candidate_newer_log.status().term >= Term(8));
+}

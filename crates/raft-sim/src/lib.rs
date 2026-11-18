@@ -12,3 +12,12 @@
 //! - Real wall-clock time, OS sockets, or async runtimes.
 
 #![forbid(unsafe_code)]
+
+pub mod client;
+pub mod invariants;
+pub mod linearizability;
+pub mod nemesis;
+pub mod network;
+pub mod sim;
+
+pub use sim::{RunReport, Sim, SimConfig, Violation};
