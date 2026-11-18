@@ -798,7 +798,8 @@ impl Sim {
 
         loop {
             let ready = {
-                let n = self.nodes.get_mut(&id).expect("valid id");
+                // INVARIANT: callers only invoke drain_node_ready with node IDs registered in self.nodes.
+                let n = self.nodes.get_mut(&id).expect("INVARIANT: valid node id");
                 if !n.is_up() {
                     break;
                 }
@@ -814,8 +815,10 @@ impl Sim {
 
             // Step 1: Persist snapshot, entries, and hard state BEFORE messages leave or entries apply.
             let persist_res = {
-                let n = self.nodes.get_mut(&id).expect("valid id");
-                let wal = n.wal.as_mut().expect("up node has WAL");
+                let n = self.nodes.get_mut(&id).expect("INVARIANT: valid node id");
+                let Some(wal) = n.wal.as_mut() else {
+                    break;
+                };
                 wal.persist(Batch {
                     snapshot: ready.snapshot.as_ref(),
                     hard_state: ready.hard_state.as_ref(),
@@ -824,7 +827,7 @@ impl Sim {
             };
             match persist_res {
                 Ok(()) => {
-                    let n = self.nodes.get_mut(&id).expect("valid id");
+                    let n = self.nodes.get_mut(&id).expect("INVARIANT: valid node id");
                     if let Some(snap) = &ready.snapshot {
                         n.durable_snapshot = Some(snap.clone());
                         n.durable_entries.clear();
@@ -840,7 +843,7 @@ impl Sim {
                 }
                 Err(WalError::Io(_)) => {
                     // Fail-stop: halt node permanently for this simulation run.
-                    let n = self.nodes.get_mut(&id).expect("valid id");
+                    let n = self.nodes.get_mut(&id).expect("INVARIANT: valid node id");
                     n.halt_eio();
                     self.record_event(format!("t={} halt_eio({})", self.tick, id));
                     return Ok((all_committed, true));
@@ -852,7 +855,7 @@ impl Sim {
 
             // Step 2: Restore snapshot if received from leader.
             if let Some(snap) = &ready.snapshot {
-                let n = self.nodes.get_mut(&id).expect("valid id");
+                let n = self.nodes.get_mut(&id).expect("INVARIANT: valid node id");
                 if let Err(err) = n.kv.restore(snap.meta.index, &snap.data) {
                     return Err(self.violation(format!("restore failed on {id}: {err}")));
                 }
@@ -870,7 +873,7 @@ impl Sim {
             let mut retry_tokens: Vec<(u64, Option<NodeId>)> = Vec::new();
             let mut apply_err: Option<String> = None;
             {
-                let n = self.nodes.get_mut(&id).expect("valid id");
+                let n = self.nodes.get_mut(&id).expect("INVARIANT: valid node id");
                 for entry in &ready.committed {
                     let applied = match n.kv.apply(entry.index, &entry.payload) {
                         Ok(a) => a,
@@ -964,7 +967,8 @@ impl Sim {
 
             // Step 8: Maybe snapshot & compact.
             let maybe_snap = {
-                let n = self.nodes.get(&id).expect("valid id");
+                // INVARIANT: id is a cluster node inserted at startup.
+                let n = self.nodes.get(&id).expect("INVARIANT: valid node id");
                 let applied = n.kv.applied_index();
                 if applied.0.saturating_sub(n.last_snapshot_index.0) >= self.cfg.snapshot_threshold
                 {
@@ -981,19 +985,24 @@ impl Sim {
             };
             if let Some(snap) = maybe_snap {
                 let save_res = {
-                    let n = self.nodes.get_mut(&id).expect("valid id");
-                    n.wal.as_mut().expect("up node").save_snapshot(&snap)
+                    let n = self.nodes.get_mut(&id).expect("INVARIANT: valid node id");
+                    let Some(wal) = n.wal.as_mut() else {
+                        break;
+                    };
+                    wal.save_snapshot(&snap)
                 };
                 match save_res {
                     Ok(()) => {
-                        let n = self.nodes.get_mut(&id).expect("valid id");
+                        let n = self.nodes.get_mut(&id).expect("INVARIANT: valid node id");
                         n.durable_snapshot = Some(snap.clone());
                         n.durable_entries.retain(|e| e.index > snap.meta.index);
                         n.last_snapshot_index = snap.meta.index;
-                        n.raft.as_mut().expect("up node").compact(snap);
+                        if let Some(raft) = n.raft.as_mut() {
+                            raft.compact(snap);
+                        }
                     }
                     Err(WalError::Io(_)) => {
-                        let n = self.nodes.get_mut(&id).expect("valid id");
+                        let n = self.nodes.get_mut(&id).expect("INVARIANT: valid node id");
                         n.halt_eio();
                         self.record_event(format!("t={} halt_eio_snap({})", self.tick, id));
                         return Ok((all_committed, true));
@@ -1006,7 +1015,7 @@ impl Sim {
             }
 
             // Step 9: Advance Raft core.
-            let n = self.nodes.get_mut(&id).expect("valid id");
+            let n = self.nodes.get_mut(&id).expect("INVARIANT: valid node id");
             if let Some(raft) = n.raft.as_mut() {
                 raft.advance();
             }
@@ -1016,20 +1025,24 @@ impl Sim {
     }
 
     fn verify_liveness(&self) -> Result<(), Violation> {
-        let up_nodes: Vec<&SimNode> = self.nodes.values().filter(|n| n.is_up()).collect();
+        let up_nodes: Vec<(&SimNode, &RaftNode)> = self
+            .nodes
+            .values()
+            .filter_map(|n| {
+                n.is_up()
+                    .then_some(n)
+                    .and_then(|n| n.raft.as_ref().map(|r| (n, r)))
+            })
+            .collect();
         let leaders: Vec<NodeId> = up_nodes
             .iter()
-            .filter_map(|n| {
-                n.raft
-                    .as_ref()
-                    .filter(|r| r.status().role == Role::Leader)
-                    .map(|r| r.status().id)
-            })
+            .filter(|(_, r)| r.status().role == Role::Leader)
+            .map(|(_, r)| r.status().id)
             .collect();
         if leaders.len() != 1 {
             let details: Vec<String> = up_nodes
                 .iter()
-                .filter_map(|n| n.raft.as_ref().map(|r| format!("{:?}", r.status())))
+                .map(|(_, r)| format!("{:?}", r.status()))
                 .collect();
             return Err(self.violation(format!(
                 "Liveness violated after heal: expected 1 leader, found {leaders:?}; statuses: {}",
@@ -1037,13 +1050,13 @@ impl Sim {
             )));
         }
 
-        let first = up_nodes[0];
-        let expected_commit = first.raft.as_ref().unwrap().status().commit;
+        let (first, first_raft) = up_nodes[0];
+        let expected_commit = first_raft.status().commit;
         let expected_applied = first.kv.applied_index();
         let expected_snap = first.kv.snapshot();
 
-        for node in &up_nodes[1..] {
-            let st = node.raft.as_ref().unwrap().status();
+        for (node, raft) in &up_nodes[1..] {
+            let st = raft.status();
             if st.commit != expected_commit || node.kv.applied_index() != expected_applied {
                 return Err(self.violation(format!(
                     "Liveness convergence failed: node {} commit={} applied={} vs node {} commit={} applied={}",
