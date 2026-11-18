@@ -1,0 +1,13 @@
+[package]
+name = "raft-sim"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
+
+[[bin]]
+name = "raft-sim"
+path = "src/main.rs"
+
+[lints]
+workspace = true
