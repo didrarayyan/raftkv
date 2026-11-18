@@ -13,3 +13,11 @@
 //! - Any disk I/O, networking, leases, TTLs, watches, or multi-key transactions.
 
 #![forbid(unsafe_code)]
+
+mod codec;
+mod store;
+
+pub use codec::{
+    Command, CommandDecodeError, MAX_KEY_BYTES, MAX_SESSIONS, MAX_VALUE_BYTES, Op, OpResult,
+};
+pub use store::{Applied, ApplyError, KvStore, RestoreError};
