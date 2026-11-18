@@ -781,3 +781,43 @@ fn leader_sends_install_snapshot_when_follower_needs_compacted_entry() {
     assert_eq!(nodes[&slow_follower].status().last_log_index, Index(5));
     assert_eq!(nodes[&slow_follower].status().commit, Index(5));
 }
+
+#[test]
+fn replicate_follower_catches_up_via_heartbeat_without_new_proposals() {
+    let mut nodes = elect_three_node_leader();
+    let lid = leader_id(&nodes);
+    let followers: Vec<NodeId> = nodes.keys().copied().filter(|&id| id != lid).collect();
+    let slow_follower = followers[1];
+
+    // Pump one round so both followers acknowledge index 1 and enter ProgressState::Replicate.
+    pump_messages(&mut nodes, &[]);
+    assert!(
+        nodes[&lid]
+            .status()
+            .peers
+            .iter()
+            .any(|p| p.id == slow_follower && p.match_index == Index(1))
+    );
+
+    // Block slow_follower while proposing entries 2..=4 (optimistically advancing its next_index).
+    let blocked = vec![(lid, slow_follower), (slow_follower, lid)];
+    for payload in [b"x".as_slice(), b"y", b"z"] {
+        nodes
+            .get_mut(&lid)
+            .unwrap()
+            .propose(Bytes::copy_from_slice(payload))
+            .unwrap();
+        pump_messages(&mut nodes, &blocked);
+    }
+    assert_eq!(nodes[&lid].status().commit, Index(4));
+    assert_eq!(nodes[&slow_follower].status().last_log_index, Index(1));
+
+    // Unblock slow_follower and advance ticks with zero new proposals; heartbeats must heal the gap.
+    for _ in 0..10 {
+        nodes.get_mut(&lid).unwrap().tick();
+        pump_messages(&mut nodes, &[]);
+    }
+
+    assert_eq!(nodes[&slow_follower].status().last_log_index, Index(4));
+    assert_eq!(nodes[&slow_follower].status().commit, Index(4));
+}

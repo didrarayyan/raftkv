@@ -1207,6 +1207,7 @@ dependencies = [
  "proptest",
  "prost",
  "raft-core",
+ "raftkv-cli",
  "raftkv-kv",
  "raftkv-proto",
  "raftkv-wal",

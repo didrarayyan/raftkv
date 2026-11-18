@@ -1023,6 +1023,12 @@ impl RaftNode {
                     self.send_append(peer);
                     continue;
                 }
+            } else if matches!(state, ProgressState::Replicate)
+                && match_index < self.log.last_index()
+                && read_ctx == 0
+            {
+                self.send_append(peer);
+                continue;
             }
 
             let prev_index = if match_index >= self.log.snapshot_index() {
@@ -1041,6 +1047,9 @@ impl RaftNode {
                     read_ctx,
                 },
             );
+            if read_ctx != 0 && match_index < self.log.last_index() {
+                self.send_append(peer);
+            }
         }
     }
 
