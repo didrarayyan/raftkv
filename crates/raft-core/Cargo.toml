@@ -7,3 +7,10 @@ rust-version.workspace = true
 
 [lints]
 workspace = true
+
+[dependencies]
+bytes = "1.12.2"
+thiserror = "2.0.21"
+
+[dev-dependencies]
+proptest = "1.12.0"

@@ -16,3 +16,16 @@
 //! - Dynamic cluster membership changes or multi-Raft sharding.
 
 #![forbid(unsafe_code)]
+
+mod config;
+mod error;
+mod log;
+mod types;
+
+pub use config::Config;
+pub use error::{ConfigError, ProposeError, ReadError};
+pub use log::RaftLog;
+pub use types::{
+    Entry, HardState, Index, NodeId, Payload, PeerStatus, Proposal, ReadState, Recovered, Role,
+    Snapshot, SnapshotMeta, SoftState, Status, Term,
+};
