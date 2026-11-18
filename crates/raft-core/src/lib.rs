@@ -20,11 +20,16 @@
 mod config;
 mod error;
 mod log;
+mod message;
+mod node;
+mod progress;
 mod types;
 
 pub use config::Config;
 pub use error::{ConfigError, ProposeError, ReadError};
 pub use log::RaftLog;
+pub use message::{AppendResult, Message, MessageBody};
+pub use node::{RaftNode, Ready};
 pub use types::{
     Entry, HardState, Index, NodeId, Payload, PeerStatus, Proposal, ReadState, Recovered, Role,
     Snapshot, SnapshotMeta, SoftState, Status, Term,
