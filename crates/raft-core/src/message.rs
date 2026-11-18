@@ -1,6 +1,6 @@
 //! Raft protocol message definitions exchanged between peers via the driver.
 
-use crate::types::{Entry, Index, NodeId, Term};
+use crate::types::{Entry, Index, NodeId, Snapshot, Term};
 
 /// Envelope carrying a single Raft protocol RPC or response between two nodes.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -78,5 +78,15 @@ pub enum MessageBody {
         result: AppendResult,
         /// Echoed `read_ctx` from the triggering `AppendEntries`.
         read_ctx: u64,
+    },
+    /// Snapshot transfer sent to a follower that lags behind the compacted log prefix.
+    InstallSnapshot {
+        /// Complete point-in-time snapshot to install.
+        snapshot: Snapshot,
+    },
+    /// Response to [`MessageBody::InstallSnapshot`].
+    InstallSnapshotResponse {
+        /// Highest index now covered on the follower after handling the snapshot.
+        match_index: Index,
     },
 }

@@ -1,19 +1,20 @@
 //! Pure Raft consensus state machine driver interface (`RaftNode` and `Ready`).
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet, VecDeque};
 
+use bytes::Bytes;
 use rand::RngExt;
 use rand_chacha::ChaCha8Rng;
 use rand_chacha::rand_core::SeedableRng;
 
 use crate::config::Config;
-use crate::error::ConfigError;
+use crate::error::{ConfigError, ProposeError, ReadError};
 use crate::log::RaftLog;
 use crate::message::{AppendResult, Message, MessageBody};
-use crate::progress::Progress;
+use crate::progress::{Progress, ProgressState};
 use crate::types::{
-    Entry, HardState, Index, NodeId, Payload, PeerStatus, ReadState, Recovered, Role, Snapshot,
-    SoftState, Status, Term,
+    Entry, HardState, Index, NodeId, Payload, PeerStatus, Proposal, ReadState, Recovered, Role,
+    Snapshot, SoftState, Status, Term,
 };
 
 /// Work items produced by [`RaftNode::ready`] that the driver must process in order.
@@ -38,9 +39,17 @@ pub struct Ready {
 #[derive(Debug, Clone)]
 struct PendingReady {
     last_entry_index: Option<Index>,
+    snapshot_index: Option<Index>,
     hard_state: Option<HardState>,
     soft_state: Option<SoftState>,
     applied_to: Option<Index>,
+}
+
+#[derive(Debug, Clone)]
+struct PendingReadRound {
+    round_ctx: u64,
+    acks: BTreeSet<NodeId>,
+    reads: Vec<ReadState>,
 }
 
 /// Deterministic Raft state machine for a single cluster member.
@@ -57,6 +66,8 @@ pub struct RaftNode {
     persisted_index: Index,
     persisted_hard_state: HardState,
     last_soft_state: SoftState,
+    pending_snapshot: Option<Snapshot>,
+    pending_compact: Option<Snapshot>,
     rng: ChaCha8Rng,
     election_timeout: u32,
     election_elapsed: u32,
@@ -65,6 +76,9 @@ pub struct RaftNode {
     ticks_since_leader_contact: u32,
     votes: BTreeMap<NodeId, bool>,
     progress: BTreeMap<NodeId, Progress>,
+    queued_reads: Vec<u64>,
+    pending_read_rounds: VecDeque<PendingReadRound>,
+    ready_read_states: Vec<ReadState>,
     outbox: Vec<Message>,
     in_flight_ready: Option<PendingReady>,
 }
@@ -75,7 +89,11 @@ impl RaftNode {
         cfg.validate()?;
         let log = RaftLog::from_recovered(recovered.snapshot, recovered.entries)?;
         let persisted_index = log.last_index();
-        let commit = recovered.hard_state.commit.min(log.last_index());
+        let commit = recovered
+            .hard_state
+            .commit
+            .max(log.snapshot_index())
+            .min(log.last_index());
         let applied = log.snapshot_index();
         let persisted_hard_state = recovered.hard_state;
 
@@ -99,6 +117,8 @@ impl RaftNode {
             persisted_index,
             persisted_hard_state,
             last_soft_state: soft_state,
+            pending_snapshot: None,
+            pending_compact: None,
             rng,
             election_timeout,
             election_elapsed: 0,
@@ -106,6 +126,9 @@ impl RaftNode {
             check_quorum_elapsed: 0,
             votes: BTreeMap::new(),
             progress: BTreeMap::new(),
+            queued_reads: Vec::new(),
+            pending_read_rounds: VecDeque::new(),
+            ready_read_states: Vec::new(),
             outbox: Vec::new(),
             in_flight_ready: None,
         })
@@ -203,11 +226,65 @@ impl RaftNode {
                 leader_commit,
                 read_ctx,
             ),
-            MessageBody::AppendEntriesResponse { result, .. } => {
-                self.handle_append_entries_response(msg.from, result);
+            MessageBody::AppendEntriesResponse { result, read_ctx } => {
+                self.handle_append_entries_response(msg.from, result, read_ctx);
+            }
+            MessageBody::InstallSnapshot { snapshot } => {
+                self.handle_install_snapshot(msg.from, snapshot);
+            }
+            MessageBody::InstallSnapshotResponse { match_index } => {
+                self.handle_install_snapshot_response(msg.from, match_index);
             }
             MessageBody::PreVote { .. } | MessageBody::PreVoteResponse { .. } => {}
         }
+    }
+
+    /// Appends a command proposal on the leader and initiates replication immediately.
+    pub fn propose(&mut self, data: Bytes) -> Result<Proposal, ProposeError> {
+        if self.role != Role::Leader {
+            return Err(ProposeError::NotLeader {
+                leader: self.leader_id,
+            });
+        }
+        let index = self.log.last_index().next();
+        let term = self.term;
+        self.log.append(&[Entry {
+            term,
+            index,
+            payload: Payload::Command(data),
+        }]);
+        self.bcast_append();
+        Ok(Proposal { index, term })
+    }
+
+    /// Registers a linearizable read request correlated by non-zero `ctx`.
+    pub fn read_index(&mut self, ctx: u64) -> Result<(), ReadError> {
+        if self.role != Role::Leader {
+            return Err(ReadError::NotLeader {
+                leader: self.leader_id,
+            });
+        }
+        if ctx == 0 {
+            return Err(ReadError::InvalidContext);
+        }
+        if self.has_read_ctx(ctx) {
+            return Err(ReadError::DuplicateContext);
+        }
+
+        if self.has_committed_in_current_term() {
+            self.enqueue_confirmed_term_read(ctx);
+        } else {
+            self.queued_reads.push(ctx);
+        }
+        Ok(())
+    }
+
+    /// Discards log entries up to `snapshot.meta.index` after the driver persists the snapshot.
+    pub fn compact(&mut self, snapshot: Snapshot) {
+        self.log.compact_to(snapshot);
+        self.persisted_index = self.persisted_index.max(self.log.snapshot_index());
+        self.commit = self.commit.max(self.log.snapshot_index());
+        self.applied = self.applied.max(self.log.snapshot_index());
     }
 
     /// Returns pending work for the driver, or `None` if idle or awaiting `advance()`.
@@ -229,6 +306,7 @@ impl RaftNode {
         };
         let hard_state = (current_hard != self.persisted_hard_state).then_some(current_hard);
 
+        let snapshot = self.pending_snapshot.take();
         let entries = self.log.entries_from(self.persisted_index.next());
         let messages = std::mem::take(&mut self.outbox);
 
@@ -240,18 +318,22 @@ impl RaftNode {
         } else {
             Vec::new()
         };
+        let read_states = std::mem::take(&mut self.ready_read_states);
 
         if soft_state.is_none()
             && hard_state.is_none()
+            && snapshot.is_none()
             && entries.is_empty()
             && messages.is_empty()
             && committed.is_empty()
+            && read_states.is_empty()
         {
             return None;
         }
 
         self.in_flight_ready = Some(PendingReady {
             last_entry_index: entries.last().map(|e| e.index),
+            snapshot_index: snapshot.as_ref().map(|s| s.meta.index),
             hard_state,
             soft_state,
             applied_to: committed.last().map(|e| e.index),
@@ -260,11 +342,11 @@ impl RaftNode {
         Some(Ready {
             soft_state,
             hard_state,
-            snapshot: None,
+            snapshot,
             entries,
             messages,
             committed,
-            read_states: Vec::new(),
+            read_states,
         })
     }
 
@@ -279,11 +361,22 @@ impl RaftNode {
         if let Some(hard) = pending.hard_state {
             self.persisted_hard_state = hard;
         }
+        if let Some(snap_idx) = pending.snapshot_index {
+            self.persisted_index = self.persisted_index.max(snap_idx);
+            self.applied = self.applied.max(snap_idx);
+        }
         if let Some(idx) = pending.last_entry_index {
             self.persisted_index = self.persisted_index.max(idx).min(self.log.last_index());
         }
         if let Some(applied) = pending.applied_to {
             self.applied = self.applied.max(applied);
+        }
+        if let Some(snap) = self.pending_compact.as_ref()
+            && self.applied >= snap.meta.index
+            && let Some(snap) = self.pending_compact.take()
+        {
+            self.log.compact_to(snap);
+            self.persisted_index = self.persisted_index.max(self.log.snapshot_index());
         }
         if self.role == Role::Leader {
             self.maybe_commit();
@@ -332,6 +425,19 @@ impl RaftNode {
             .filter(move |&id| id != self_id)
     }
 
+    fn has_committed_in_current_term(&self) -> bool {
+        self.log.term_at(self.commit) == Some(self.term)
+    }
+
+    fn has_read_ctx(&self, ctx: u64) -> bool {
+        self.queued_reads.contains(&ctx)
+            || self
+                .pending_read_rounds
+                .iter()
+                .any(|r| r.reads.iter().any(|s| s.ctx == ctx))
+            || self.ready_read_states.iter().any(|s| s.ctx == ctx)
+    }
+
     fn reset_election_timer(&mut self) {
         self.election_elapsed = 0;
         self.election_timeout = sample_election_timeout(&mut self.rng, self.cfg.election_ticks);
@@ -362,6 +468,22 @@ impl RaftNode {
     fn tick_leader(&mut self) {
         self.heartbeat_elapsed = self.heartbeat_elapsed.saturating_add(1);
 
+        let mut timed_out_snapshots = Vec::new();
+        for (&peer, p) in &mut self.progress {
+            if let ProgressState::Snapshot { ticks, .. } = &mut p.state {
+                *ticks = ticks.saturating_add(1);
+                if *ticks >= self.cfg.election_ticks {
+                    timed_out_snapshots.push(peer);
+                }
+            }
+        }
+        for peer in timed_out_snapshots {
+            if let Some(p) = self.progress.get_mut(&peer) {
+                p.become_probe();
+            }
+            self.send_append(peer);
+        }
+
         if self.cfg.check_quorum {
             self.check_quorum_elapsed = self.check_quorum_elapsed.saturating_add(1);
             if self.check_quorum_elapsed >= self.cfg.election_ticks {
@@ -379,7 +501,8 @@ impl RaftNode {
 
         if self.heartbeat_elapsed >= self.cfg.heartbeat_ticks {
             self.heartbeat_elapsed = 0;
-            self.bcast_heartbeat();
+            let read_ctx = self.pending_read_rounds.back().map_or(0, |r| r.round_ctx);
+            self.bcast_heartbeat(read_ctx);
         }
     }
 
@@ -392,6 +515,9 @@ impl RaftNode {
         self.leader_id = leader_id;
         self.votes.clear();
         self.progress.clear();
+        self.queued_reads.clear();
+        self.pending_read_rounds.clear();
+        self.ready_read_states.clear();
         self.reset_election_timer();
     }
 
@@ -459,6 +585,9 @@ impl RaftNode {
         self.heartbeat_elapsed = 0;
         self.check_quorum_elapsed = 0;
         self.ticks_since_leader_contact = 0;
+        self.queued_reads.clear();
+        self.pending_read_rounds.clear();
+        self.ready_read_states.clear();
 
         let noop_index = self.log.last_index().next();
         self.log.append(&[Entry {
@@ -473,7 +602,7 @@ impl RaftNode {
             self.progress.insert(peer, Progress::new(noop_index));
         }
 
-        self.bcast_heartbeat();
+        self.bcast_append();
     }
 
     fn handle_pre_vote(
@@ -559,8 +688,46 @@ impl RaftNode {
         }
         self.ticks_since_leader_contact = 0;
 
-        if !self.log.matches(prev_index, prev_term) {
-            let (conflict_index, conflict_term) = self.log.conflict_info(prev_index);
+        // R7: Skip any prefix already covered by the local snapshot.
+        let snap_idx = self.log.snapshot_index();
+        let (eff_prev_index, eff_prev_term, eff_entries) = if prev_index < snap_idx {
+            let skip = (snap_idx.0 - prev_index.0) as usize;
+            if skip > entries.len() {
+                let next_commit = leader_commit.min(snap_idx);
+                if next_commit > self.commit {
+                    self.commit = next_commit;
+                }
+                self.send(
+                    from,
+                    MessageBody::AppendEntriesResponse {
+                        result: AppendResult::Accepted {
+                            match_index: snap_idx,
+                        },
+                        read_ctx,
+                    },
+                );
+                return;
+            }
+            if entries[skip - 1].term != self.log.snapshot_term() {
+                self.send(
+                    from,
+                    MessageBody::AppendEntriesResponse {
+                        result: AppendResult::Rejected {
+                            conflict_index: snap_idx.next(),
+                            conflict_term: Term(0),
+                        },
+                        read_ctx,
+                    },
+                );
+                return;
+            }
+            (snap_idx, self.log.snapshot_term(), &entries[skip..])
+        } else {
+            (prev_index, prev_term, entries)
+        };
+
+        if !self.log.matches(eff_prev_index, eff_prev_term) {
+            let (conflict_index, conflict_term) = self.log.conflict_info(eff_prev_index);
             self.send(
                 from,
                 MessageBody::AppendEntriesResponse {
@@ -575,8 +742,8 @@ impl RaftNode {
         }
 
         let mut truncate_at = None;
-        let mut append_from = entries.len();
-        for (idx, entry) in entries.iter().enumerate() {
+        let mut append_from = eff_entries.len();
+        for (idx, entry) in eff_entries.iter().enumerate() {
             match self.log.term_at(entry.index) {
                 Some(existing) if existing == entry.term => {}
                 Some(_) => {
@@ -601,12 +768,12 @@ impl RaftNode {
                     .filter(|last| *last > self.log.snapshot_index());
             }
         }
-        if append_from < entries.len() {
-            self.log.append(&entries[append_from..]);
+        if append_from < eff_entries.len() {
+            self.log.append(&eff_entries[append_from..]);
         }
 
-        let last_new_index = Index(prev_index.0 + entries.len() as u64);
-        let next_commit = leader_commit.min(last_new_index).min(self.log.last_index());
+        let last_new_index = Index(eff_prev_index.0 + eff_entries.len() as u64);
+        let next_commit = leader_commit.min(last_new_index);
         if next_commit > self.commit {
             self.commit = next_commit;
         }
@@ -615,14 +782,19 @@ impl RaftNode {
             from,
             MessageBody::AppendEntriesResponse {
                 result: AppendResult::Accepted {
-                    match_index: self.log.last_index(),
+                    match_index: last_new_index,
                 },
                 read_ctx,
             },
         );
     }
 
-    fn handle_append_entries_response(&mut self, from: NodeId, result: AppendResult) {
+    fn handle_append_entries_response(
+        &mut self,
+        from: NodeId,
+        result: AppendResult,
+        read_ctx: u64,
+    ) {
         if self.role != Role::Leader {
             return;
         }
@@ -630,40 +802,245 @@ impl RaftNode {
             return;
         };
         progress.recently_active = true;
-        if let AppendResult::Accepted { match_index } = result {
-            if match_index > progress.match_index {
-                progress.match_index = match_index;
-                progress.next_index = match_index.next();
+
+        match result {
+            AppendResult::Accepted { match_index } => {
+                if match_index > progress.match_index {
+                    progress.match_index = match_index;
+                }
+                if matches!(progress.state, ProgressState::Probe { .. }) {
+                    progress.become_replicate();
+                }
+                progress.next_index = progress.next_index.max(progress.match_index.next());
+                let should_send_more = matches!(progress.state, ProgressState::Replicate)
+                    && progress.next_index <= self.log.last_index();
+
+                self.maybe_commit();
+                if should_send_more {
+                    self.send_append(from);
+                }
             }
-            self.maybe_commit();
+            AppendResult::Rejected {
+                conflict_index,
+                conflict_term,
+            } => {
+                if let ProgressState::Probe {
+                    last_probe_prev_index: Some(prev),
+                    ..
+                } = progress.state
+                    && prev <= progress.match_index
+                {
+                    return;
+                }
+                if matches!(progress.state, ProgressState::Snapshot { .. }) {
+                    return;
+                }
+                if conflict_term == Term(0) && conflict_index <= progress.match_index {
+                    return;
+                }
+
+                let next = if conflict_term != Term(0)
+                    && let Some(last_with_term) = self.log.last_index_with_term(conflict_term)
+                {
+                    last_with_term.next()
+                } else {
+                    conflict_index
+                };
+                progress.next_index = next.max(progress.match_index.next());
+                progress.become_probe();
+                self.send_append(from);
+            }
+        }
+
+        if read_ctx != 0 {
+            self.record_read_ack(from, read_ctx);
         }
     }
 
-    fn bcast_heartbeat(&mut self) {
+    fn handle_install_snapshot(&mut self, from: NodeId, snapshot: Snapshot) {
+        if self.role != Role::Follower || self.leader_id != Some(from) {
+            self.become_follower(self.term, Some(from));
+        } else {
+            self.reset_election_timer();
+        }
+        self.ticks_since_leader_contact = 0;
+
+        let snap_idx = snapshot.meta.index;
+        let snap_term = snapshot.meta.term;
+
+        if snap_idx <= self.log.snapshot_index() {
+            self.send(
+                from,
+                MessageBody::InstallSnapshotResponse {
+                    match_index: self.log.snapshot_index(),
+                },
+            );
+            return;
+        }
+
+        if self.log.matches(snap_idx, snap_term) {
+            self.commit = self.commit.max(snap_idx);
+            if self.applied >= snap_idx {
+                self.log.compact_to(snapshot);
+                self.persisted_index = self.persisted_index.max(snap_idx);
+            } else {
+                self.pending_compact = Some(snapshot);
+            }
+            self.send(
+                from,
+                MessageBody::InstallSnapshotResponse {
+                    match_index: snap_idx,
+                },
+            );
+            return;
+        }
+
+        self.log.install_snapshot(snapshot.clone());
+        self.commit = self.commit.max(snap_idx);
+        self.applied = self.applied.max(snap_idx);
+        self.persisted_index = snap_idx;
+        self.pending_compact = None;
+        if let Some(pending) = &mut self.in_flight_ready {
+            pending.last_entry_index = None;
+            pending.applied_to = None;
+        }
+        self.pending_snapshot = Some(snapshot);
+
+        self.send(
+            from,
+            MessageBody::InstallSnapshotResponse {
+                match_index: snap_idx,
+            },
+        );
+    }
+
+    fn handle_install_snapshot_response(&mut self, from: NodeId, match_index: Index) {
+        if self.role != Role::Leader {
+            return;
+        }
+        let Some(progress) = self.progress.get_mut(&from) else {
+            return;
+        };
+        progress.recently_active = true;
+        if match_index > progress.match_index {
+            progress.match_index = match_index;
+        }
+        progress.next_index = progress.match_index.next();
+        progress.become_probe();
+        let next_index = progress.next_index;
+        self.maybe_commit();
+        if next_index <= self.log.last_index() {
+            self.send_append(from);
+        }
+    }
+
+    fn bcast_append(&mut self) {
         let peers: Vec<NodeId> = self.progress.keys().copied().collect();
         for peer in peers {
-            let next = self
-                .progress
-                .get(&peer)
-                .map_or(self.log.last_index().next(), |p| p.next_index);
-            let prev_index = next.prev();
-            let prev_term = self.log.term_at(prev_index).unwrap_or(Term(0));
-            let entries =
-                self.log
-                    .slice(next, self.cfg.max_append_entries, self.cfg.max_append_bytes);
-            if let Some(last) = entries.last()
-                && let Some(p) = self.progress.get_mut(&peer)
-            {
-                p.next_index = last.index.next();
+            self.send_append(peer);
+        }
+    }
+
+    fn send_append(&mut self, peer: NodeId) {
+        let Some(&progress) = self.progress.get(&peer) else {
+            return;
+        };
+        match progress.state {
+            ProgressState::Snapshot { .. }
+            | ProgressState::Probe {
+                in_flight: true, ..
+            } => return,
+            ProgressState::Probe {
+                in_flight: false, ..
             }
+            | ProgressState::Replicate => {}
+        }
+
+        if progress.next_index <= self.log.snapshot_index() {
+            if let Some(snap) = self.log.snapshot().cloned() {
+                if let Some(p) = self.progress.get_mut(&peer) {
+                    p.become_snapshot(snap.meta.index);
+                }
+                self.send(peer, MessageBody::InstallSnapshot { snapshot: snap });
+            }
+            return;
+        }
+
+        let prev_index = progress.next_index.prev();
+        let Some(prev_term) = self.log.term_at(prev_index) else {
+            return;
+        };
+        let entries = self.log.slice(
+            progress.next_index,
+            self.cfg.max_append_entries,
+            self.cfg.max_append_bytes,
+        );
+
+        if let Some(p) = self.progress.get_mut(&peer) {
+            match &mut p.state {
+                ProgressState::Probe {
+                    in_flight,
+                    last_probe_prev_index,
+                } => {
+                    *in_flight = true;
+                    *last_probe_prev_index = Some(prev_index);
+                }
+                ProgressState::Replicate => {
+                    if let Some(last) = entries.last() {
+                        p.next_index = last.index.next();
+                    }
+                }
+                ProgressState::Snapshot { .. } => {}
+            }
+        }
+
+        self.send(
+            peer,
+            MessageBody::AppendEntries {
+                prev_index,
+                prev_term,
+                entries,
+                leader_commit: self.commit,
+                read_ctx: 0,
+            },
+        );
+    }
+
+    fn bcast_heartbeat(&mut self, read_ctx: u64) {
+        let peers: Vec<NodeId> = self.progress.keys().copied().collect();
+        for peer in peers {
+            let Some(progress) = self.progress.get_mut(&peer) else {
+                continue;
+            };
+            let state = progress.state;
+            let next_index = progress.next_index;
+            let match_index = progress.match_index;
+
+            if matches!(state, ProgressState::Snapshot { .. }) && read_ctx == 0 {
+                continue;
+            }
+            if matches!(state, ProgressState::Probe { .. }) {
+                progress.become_probe();
+                if next_index <= self.log.last_index() && read_ctx == 0 {
+                    self.send_append(peer);
+                    continue;
+                }
+            }
+
+            let prev_index = if match_index >= self.log.snapshot_index() {
+                match_index
+            } else {
+                self.log.snapshot_index()
+            };
+            let prev_term = self.log.term_at(prev_index).unwrap_or(Term(0));
             self.send(
                 peer,
                 MessageBody::AppendEntries {
                     prev_index,
                     prev_term,
-                    entries,
+                    entries: Vec::new(),
                     leader_commit: self.commit,
-                    read_ctx: 0,
+                    read_ctx,
                 },
             );
         }
@@ -680,6 +1057,72 @@ impl RaftNode {
         let candidate = indices[quorum_pos];
         if candidate > self.commit && self.log.term_at(candidate) == Some(self.term) {
             self.commit = candidate;
+            self.flush_queued_reads();
+        }
+    }
+
+    fn flush_queued_reads(&mut self) {
+        if self.queued_reads.is_empty() || !self.has_committed_in_current_term() {
+            return;
+        }
+        let queued = std::mem::take(&mut self.queued_reads);
+        for ctx in queued {
+            self.enqueue_confirmed_term_read(ctx);
+        }
+    }
+
+    fn enqueue_confirmed_term_read(&mut self, ctx: u64) {
+        let read_state = ReadState {
+            ctx,
+            index: self.commit,
+        };
+        if self.cfg.peers.len() == 1 {
+            self.ready_read_states.push(read_state);
+            return;
+        }
+
+        if let Some(last) = self.pending_read_rounds.back_mut()
+            && self
+                .outbox
+                .iter()
+                .any(|m| matches!(m.body, MessageBody::AppendEntries { read_ctx, .. } if read_ctx == last.round_ctx))
+        {
+            last.reads.push(read_state);
+            return;
+        }
+
+        let mut acks = BTreeSet::new();
+        acks.insert(self.cfg.id);
+        self.pending_read_rounds.push_back(PendingReadRound {
+            round_ctx: ctx,
+            acks,
+            reads: vec![read_state],
+        });
+        self.bcast_heartbeat(ctx);
+    }
+
+    fn record_read_ack(&mut self, from: NodeId, read_ctx: u64) {
+        let Some(pos) = self
+            .pending_read_rounds
+            .iter()
+            .position(|r| r.round_ctx == read_ctx)
+        else {
+            return;
+        };
+
+        for round in self.pending_read_rounds.iter_mut().take(pos + 1) {
+            round.acks.insert(from);
+        }
+
+        let quorum = self.quorum();
+        while let Some(front) = self.pending_read_rounds.front() {
+            if front.acks.len() >= quorum {
+                if let Some(done) = self.pending_read_rounds.pop_front() {
+                    self.ready_read_states.extend(done.reads);
+                }
+            } else {
+                break;
+            }
         }
     }
 }
