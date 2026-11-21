@@ -28,7 +28,7 @@
 | --- | --- |
 | **Memory & Type Safety** | `#![forbid(unsafe_code)]` enforced workspace-wide across all 7 crates |
 | **Concurrency Model** | Single-owner actor driver (`0 Mutex`, `0 RwLock`); deterministic `BTreeMap`/`BTreeSet` in core |
-| **Verified Test Suite** | `84` passing workspace tests (`72` unit/doc + `9` multi-process `SIGKILL` cluster tests + `14` sim scenarios) |
+| **Verified Test Suite** | `84` passing workspace tests (`61` unit/doc + `14` simulation scenarios + `9` multi-process cluster tests) |
 | **Fault Simulation** | `2,500` seeded runs (`11,685,586` total operations) under partitions, crashes, torn writes, and `EIO` |
 | **Group-Commit WAL** | `49,633 elem/s` sustained append rate (`128`-entry batch with synchronous `sync_data()` per batch) |
 
