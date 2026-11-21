@@ -1,0 +1,71 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 960 320" width="960" height="320">
+  <rect x="0" y="0" width="960" height="320" rx="12" fill="#0D1117" stroke="#30363D" stroke-width="1.5" />
+
+  <!-- Panel 1: WAL Segment Format -->
+  <text x="32" y="34" fill="#8B949E" font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', Helvetica, Arial, sans-serif" font-size="11" font-weight="700" letter-spacing="1.2">WAL SEGMENT FORMAT (wal/&lt;seq&gt;.wal · 64 MiB ROTATION)</text>
+
+  <rect x="32" y="52" width="124" height="54" rx="6" fill="#111923" stroke="#38BDF8" stroke-width="1.5" />
+  <text x="94" y="75" text-anchor="middle" fill="#38BDF8" font-family="ui-monospace, SFMono-Regular, Menlo, Consolas, monospace" font-size="13" font-weight="700">"RKVWAL01"</text>
+  <text x="94" y="95" text-anchor="middle" fill="#8B949E" font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', Helvetica, Arial, sans-serif" font-size="10">Magic · 8 B</text>
+
+  <rect x="162" y="52" width="110" height="54" rx="6" fill="#161B22" stroke="#30363D" stroke-width="1.5" />
+  <text x="217" y="75" text-anchor="middle" fill="#F0F6FC" font-family="ui-monospace, SFMono-Regular, Menlo, Consolas, monospace" font-size="13" font-weight="700">seq</text>
+  <text x="217" y="95" text-anchor="middle" fill="#8B949E" font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', Helvetica, Arial, sans-serif" font-size="10">u64 LE · 8 B</text>
+
+  <rect x="278" y="52" width="114" height="54" rx="6" fill="#211410" stroke="#F97316" stroke-width="1.5" />
+  <text x="335" y="75" text-anchor="middle" fill="#F97316" font-family="ui-monospace, SFMono-Regular, Menlo, Consolas, monospace" font-size="13" font-weight="700">crc32</text>
+  <text x="335" y="95" text-anchor="middle" fill="#8B949E" font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', Helvetica, Arial, sans-serif" font-size="10">u32 LE · 4 B</text>
+
+  <rect x="398" y="52" width="104" height="54" rx="6" fill="#161B22" stroke="#30363D" stroke-width="1.5" />
+  <text x="450" y="75" text-anchor="middle" fill="#F0F6FC" font-family="ui-monospace, SFMono-Regular, Menlo, Consolas, monospace" font-size="13" font-weight="700">len</text>
+  <text x="450" y="95" text-anchor="middle" fill="#8B949E" font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', Helvetica, Arial, sans-serif" font-size="10">u32 LE · 4 B</text>
+
+  <rect x="508" y="52" width="114" height="54" rx="6" fill="#161B22" stroke="#30363D" stroke-width="1.5" />
+  <text x="565" y="75" text-anchor="middle" fill="#F0F6FC" font-family="ui-monospace, SFMono-Regular, Menlo, Consolas, monospace" font-size="13" font-weight="700">kind</text>
+  <text x="565" y="95" text-anchor="middle" fill="#8B949E" font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', Helvetica, Arial, sans-serif" font-size="10">u8 · 1=Entry, 2=HS</text>
+
+  <rect x="628" y="52" width="300" height="54" rx="6" fill="#161B22" stroke="#30363D" stroke-width="1.5" />
+  <text x="778" y="75" text-anchor="middle" fill="#F0F6FC" font-family="ui-monospace, SFMono-Regular, Menlo, Consolas, monospace" font-size="12" font-weight="700">payload (variable)</text>
+  <text x="778" y="95" text-anchor="middle" fill="#8B949E" font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', Helvetica, Arial, sans-serif" font-size="10">Entry(term, idx, noop|cmd) or 24 B HardState</text>
+
+  <!-- CRC Coverage Bracket -->
+  <path d="M 398 114 L 398 124 L 928 124 L 928 114" fill="none" stroke="#F97316" stroke-width="1.5" />
+  <text x="663" y="142" text-anchor="middle" fill="#E6EDF3" font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', Helvetica, Arial, sans-serif" font-size="11">
+    <tspan fill="#F97316" font-weight="700">IEEE CRC-32 coverage:</tspan> [len .. payload_end] · partial final-segment tail truncated cleanly on Wal::open recovery
+  </text>
+
+  <!-- Divider -->
+  <line x1="32" y1="162" x2="928" y2="162" stroke="#21262D" stroke-width="1.5" />
+
+  <!-- Panel 2: Snapshot Format -->
+  <text x="32" y="188" fill="#8B949E" font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', Helvetica, Arial, sans-serif" font-size="11" font-weight="700" letter-spacing="1.2">ATOMIC SNAPSHOT FORMAT (snap/&lt;index&gt;.snap)</text>
+
+  <rect x="32" y="204" width="124" height="54" rx="6" fill="#111923" stroke="#38BDF8" stroke-width="1.5" />
+  <text x="94" y="227" text-anchor="middle" fill="#38BDF8" font-family="ui-monospace, SFMono-Regular, Menlo, Consolas, monospace" font-size="13" font-weight="700">"RKVSNP01"</text>
+  <text x="94" y="247" text-anchor="middle" fill="#8B949E" font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', Helvetica, Arial, sans-serif" font-size="10">Magic · 8 B</text>
+
+  <rect x="162" y="204" width="106" height="54" rx="6" fill="#161B22" stroke="#30363D" stroke-width="1.5" />
+  <text x="215" y="227" text-anchor="middle" fill="#F0F6FC" font-family="ui-monospace, SFMono-Regular, Menlo, Consolas, monospace" font-size="13" font-weight="700">index</text>
+  <text x="215" y="247" text-anchor="middle" fill="#8B949E" font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', Helvetica, Arial, sans-serif" font-size="10">u64 LE · 8 B</text>
+
+  <rect x="274" y="204" width="106" height="54" rx="6" fill="#161B22" stroke="#30363D" stroke-width="1.5" />
+  <text x="327" y="227" text-anchor="middle" fill="#F0F6FC" font-family="ui-monospace, SFMono-Regular, Menlo, Consolas, monospace" font-size="13" font-weight="700">term</text>
+  <text x="327" y="247" text-anchor="middle" fill="#8B949E" font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', Helvetica, Arial, sans-serif" font-size="10">u64 LE · 8 B</text>
+
+  <rect x="386" y="204" width="114" height="54" rx="6" fill="#161B22" stroke="#30363D" stroke-width="1.5" />
+  <text x="443" y="227" text-anchor="middle" fill="#F0F6FC" font-family="ui-monospace, SFMono-Regular, Menlo, Consolas, monospace" font-size="13" font-weight="700">data_len</text>
+  <text x="443" y="247" text-anchor="middle" fill="#8B949E" font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', Helvetica, Arial, sans-serif" font-size="10">u64 LE · 8 B</text>
+
+  <rect x="506" y="204" width="302" height="54" rx="6" fill="#161B22" stroke="#30363D" stroke-width="1.5" />
+  <text x="657" y="227" text-anchor="middle" fill="#F0F6FC" font-family="ui-monospace, SFMono-Regular, Menlo, Consolas, monospace" font-size="12" font-weight="700">snapshot payload</text>
+  <text x="657" y="247" text-anchor="middle" fill="#8B949E" font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', Helvetica, Arial, sans-serif" font-size="10">protobuf KvStore entries + 4,096 client sessions</text>
+
+  <rect x="814" y="204" width="114" height="54" rx="6" fill="#211410" stroke="#F97316" stroke-width="1.5" />
+  <text x="871" y="227" text-anchor="middle" fill="#F97316" font-family="ui-monospace, SFMono-Regular, Menlo, Consolas, monospace" font-size="13" font-weight="700">crc32</text>
+  <text x="871" y="247" text-anchor="middle" fill="#8B949E" font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', Helvetica, Arial, sans-serif" font-size="10">u32 LE · 4 B</text>
+
+  <rect x="32" y="272" width="896" height="30" rx="6" fill="#161B22" stroke="#30363D" stroke-width="1" />
+  <text x="480" y="291" text-anchor="middle" fill="#E6EDF3" font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', Helvetica, Arial, sans-serif" font-size="11">
+    <tspan fill="#38BDF8" font-weight="700">Atomic Persistence:</tspan> write temp -&gt; sync_data() -&gt; atomic rename -&gt; sync_dir() · fail-stop abort on EIO or non-final corruption
+  </text>
+</svg>
