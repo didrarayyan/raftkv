@@ -193,8 +193,8 @@ where
         .add_service(AdminServer::new(services.clone()))
         .add_service(
             RaftServer::new(services)
-                .max_decoding_message_size(64 * 1024 * 1024)
-                .max_encoding_message_size(64 * 1024 * 1024),
+                .max_decoding_message_size(crate::peer::MAX_RAFT_RPC_BYTES)
+                .max_encoding_message_size(crate::peer::MAX_RAFT_RPC_BYTES),
         )
         .serve_with_shutdown(listen_addr, shutdown)
         .await;

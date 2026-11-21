@@ -162,6 +162,21 @@ pub fn evaluate_health(
         ));
     }
 
+    let max_applied = reports
+        .iter()
+        .filter_map(|r| r.status.as_ref().ok())
+        .map(|s| s.applied_index)
+        .max()
+        .unwrap_or(0);
+    if let Some(leader_status) = in_highest.iter().find(|s| s.node_id == leader_id)
+        && leader_status.commit_index < max_applied
+    {
+        return Err(format!(
+            "unhealthy cluster: leader {leader_id} commit_index ({}) lags behind max applied_index ({max_applied})",
+            leader_status.commit_index
+        ));
+    }
+
     Ok(HealthSummary {
         term: highest_term,
         leader_id,
@@ -586,5 +601,37 @@ mod tests {
 
         let split_reports = vec![ok_reports[0].clone(), ok_reports[2].clone()];
         assert!(evaluate_health(3, &split_reports).is_err());
+
+        let lagging_leader = vec![
+            NodeStatusReport {
+                endpoint: "a".to_owned(),
+                status: Ok(StatusResponse {
+                    node_id: 1,
+                    role: Role::Leader as i32,
+                    term: 3,
+                    leader_id: 1,
+                    commit_index: 2,
+                    applied_index: 2,
+                    ..Default::default()
+                }),
+            },
+            NodeStatusReport {
+                endpoint: "b".to_owned(),
+                status: Ok(StatusResponse {
+                    node_id: 2,
+                    role: Role::Follower as i32,
+                    term: 3,
+                    leader_id: 1,
+                    commit_index: 5,
+                    applied_index: 5,
+                    ..Default::default()
+                }),
+            },
+            NodeStatusReport {
+                endpoint: "c".to_owned(),
+                status: Err("down".to_owned()),
+            },
+        ];
+        assert!(evaluate_health(3, &lagging_leader).is_err());
     }
 }

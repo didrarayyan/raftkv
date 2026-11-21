@@ -19,6 +19,8 @@ const STEP_RPC_TIMEOUT: Duration = Duration::from_millis(1000);
 const SNAPSHOT_RPC_TIMEOUT: Duration = Duration::from_secs(30);
 const INITIAL_BACKOFF_MS: u64 = 50;
 const MAX_BACKOFF_MS: u64 = 2000;
+/// Maximum gRPC message frame size for peer `Raft` RPCs (64 MiB).
+pub const MAX_RAFT_RPC_BYTES: usize = 64 * 1024 * 1024;
 
 /// Runs the outbound RPC loop for a single remote peer until the channel closes.
 pub async fn run_peer_sender(
@@ -110,7 +112,9 @@ impl PeerConnState {
             .connect_timeout(PEER_CONNECT_TIMEOUT)
             .tcp_nodelay(true);
         let channel = endpoint.connect().await?;
-        let client = RaftClient::new(channel);
+        let client = RaftClient::new(channel)
+            .max_decoding_message_size(MAX_RAFT_RPC_BYTES)
+            .max_encoding_message_size(MAX_RAFT_RPC_BYTES);
         self.client = Some(client.clone());
         Ok(client)
     }

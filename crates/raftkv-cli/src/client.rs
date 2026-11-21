@@ -348,34 +348,42 @@ impl Client {
         .await
     }
 
-    /// Queries `Admin::Status` on every configured endpoint, returning per-endpoint results.
+    /// Queries `Admin::Status` concurrently on every configured endpoint, preserving endpoint order.
     pub async fn status_all(&mut self) -> Vec<NodeStatusReport> {
-        let endpoints = self.endpoints.clone();
         let per_node_timeout = self.timeout;
-        let mut reports = Vec::with_capacity(endpoints.len());
+        let mut set = tokio::task::JoinSet::new();
 
-        for ep in endpoints {
-            let status = match self.channel_for(&ep, per_node_timeout).await {
-                Ok(channel) => {
-                    let mut admin = AdminClient::new(channel);
-                    let mut req = Request::new(StatusRequest {});
-                    req.set_timeout(per_node_timeout);
-                    match admin.status(req).await {
-                        Ok(resp) => Ok(resp.into_inner()),
-                        Err(status) => Err(format!("{} ({})", status.message(), status.code())),
-                    }
-                }
-                Err(err) => {
-                    self.clear_channel(&ep);
-                    Err(err)
-                }
-            };
-            reports.push(NodeStatusReport {
-                endpoint: ep,
-                status,
+        for (idx, ep) in self.endpoints.iter().enumerate() {
+            let endpoint = ep.clone();
+            let cached = self.channels.get(&endpoint).and_then(Clone::clone);
+            set.spawn(async move {
+                let outcome = query_endpoint_status(&endpoint, cached, per_node_timeout).await;
+                (idx, endpoint, outcome)
             });
         }
-        reports
+
+        let mut ordered: Vec<Option<NodeStatusReport>> = vec![None; self.endpoints.len()];
+        while let Some(joined) = set.join_next().await {
+            if let Ok((idx, ep, outcome)) = joined {
+                let status = match outcome {
+                    Ok((resp, ch)) => {
+                        self.channels.insert(ep.clone(), Some(ch));
+                        Ok(resp)
+                    }
+                    Err(err) => {
+                        self.clear_channel(&ep);
+                        Err(err)
+                    }
+                };
+                if let Some(slot) = ordered.get_mut(idx) {
+                    *slot = Some(NodeStatusReport {
+                        endpoint: ep,
+                        status,
+                    });
+                }
+            }
+        }
+        ordered.into_iter().flatten().collect()
     }
 
     async fn retry_kv<F, Fut, T>(&mut self, mut call: F) -> Result<T, ClientError>
@@ -498,14 +506,36 @@ impl Client {
         if let Some(Some(ch)) = self.channels.get(endpoint) {
             return Ok(ch.clone());
         }
-        let uri = format!("http://{endpoint}");
-        let ep = Endpoint::from_shared(uri)
-            .map_err(|err| err.to_string())?
-            .connect_timeout(CONNECT_TIMEOUT.min(remaining))
-            .tcp_nodelay(true);
-        let ch = ep.connect().await.map_err(|err| err.to_string())?;
+        let ch = connect_channel(endpoint, remaining).await?;
         self.channels.insert(endpoint.to_owned(), Some(ch.clone()));
         Ok(ch)
+    }
+}
+
+async fn connect_channel(endpoint: &str, remaining: Duration) -> Result<Channel, String> {
+    let uri = format!("http://{endpoint}");
+    let ep = Endpoint::from_shared(uri)
+        .map_err(|err| err.to_string())?
+        .connect_timeout(CONNECT_TIMEOUT.min(remaining))
+        .tcp_nodelay(true);
+    ep.connect().await.map_err(|err| err.to_string())
+}
+
+async fn query_endpoint_status(
+    endpoint: &str,
+    cached: Option<Channel>,
+    timeout: Duration,
+) -> Result<(StatusResponse, Channel), String> {
+    let channel = match cached {
+        Some(ch) => ch,
+        None => connect_channel(endpoint, timeout).await?,
+    };
+    let mut admin = AdminClient::new(channel.clone());
+    let mut req = Request::new(StatusRequest {});
+    req.set_timeout(timeout);
+    match admin.status(req).await {
+        Ok(resp) => Ok((resp.into_inner(), channel)),
+        Err(status) => Err(format!("{} ({})", status.message(), status.code())),
     }
 }
 
