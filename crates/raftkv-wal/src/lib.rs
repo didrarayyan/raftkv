@@ -13,6 +13,34 @@
 //! Deliberately omitted:
 //! - Async runtime integration (`tokio`), direct `std::fs` calls outside `StdFs`,
 //!   or continuing after a failed fsync.
+//!
+//! # Examples
+//!
+//! ```
+//! # fn main() -> Result<(), Box<dyn std::error::Error>> {
+//! use bytes::Bytes;
+//! use raft_core::{Entry, HardState, Index, Payload, Term};
+//! use raftkv_wal::{Batch, StdFs, Wal, WalOptions};
+//!
+//! let dir = std::env::temp_dir().join(format!("raftkv_wal_doc_{}", std::process::id()));
+//! let _ = std::fs::remove_dir_all(&dir);
+//! {
+//!     let (mut wal, _) = Wal::open(StdFs, &dir, WalOptions::default())?;
+//!     let entries = [Entry {
+//!         term: Term(1),
+//!         index: Index(1),
+//!         payload: Payload::Command(Bytes::from_static(b"hello")),
+//!     }];
+//!     let hs = HardState { term: Term(1), voted_for: None, commit: Index(1) };
+//!     wal.persist(Batch { snapshot: None, hard_state: Some(&hs), entries: &entries })?;
+//! }
+//! let (_wal, recovered) = Wal::open(StdFs, &dir, WalOptions::default())?;
+//! assert_eq!(recovered.entries.len(), 1);
+//! assert_eq!(recovered.hard_state.commit, Index(1));
+//! let _ = std::fs::remove_dir_all(&dir);
+//! # Ok(())
+//! # }
+//! ```
 
 #![forbid(unsafe_code)]
 

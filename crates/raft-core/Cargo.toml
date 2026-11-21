@@ -4,6 +4,10 @@ version.workspace = true
 edition.workspace = true
 license.workspace = true
 rust-version.workspace = true
+repository.workspace = true
+keywords.workspace = true
+categories.workspace = true
+description = "Pure deterministic Raft consensus state machine with PreVote, CheckQuorum, ReadIndex, and snapshots"
 
 [lints]
 workspace = true

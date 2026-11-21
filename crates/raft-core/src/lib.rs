@@ -14,6 +14,30 @@
 //! Deliberately omitted:
 //! - Any I/O, networking, filesystem access, async runtime, or wall-clock reads.
 //! - Dynamic cluster membership changes or multi-Raft sharding.
+//!
+//! # Examples
+//!
+//! ```
+//! # fn main() -> Result<(), Box<dyn std::error::Error>> {
+//! use bytes::Bytes;
+//! use raft_core::{Config, Index, NodeId, RaftNode, Recovered, Role};
+//!
+//! let cfg = Config::with_defaults(NodeId(1), vec![NodeId(1)], 7);
+//! let mut node = RaftNode::new(cfg, Recovered::default())?;
+//! while node.status().role != Role::Leader {
+//!     node.tick();
+//!     while node.ready().is_some() {
+//!         node.advance();
+//!     }
+//! }
+//! node.propose(Bytes::from_static(b"set:k=v"))?;
+//! while node.ready().is_some() {
+//!     node.advance();
+//! }
+//! assert!(node.status().commit >= Index(2));
+//! # Ok(())
+//! # }
+//! ```
 
 #![forbid(unsafe_code)]
 

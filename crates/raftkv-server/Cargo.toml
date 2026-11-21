@@ -4,6 +4,10 @@ version.workspace = true
 edition.workspace = true
 license.workspace = true
 rust-version.workspace = true
+repository.workspace = true
+keywords.workspace = true
+categories.workspace = true
+description = "Multi-node Tokio/gRPC Raft key-value daemon (raftkvd) with dedicated WAL sync thread"
 
 [[bin]]
 name = "raftkvd"

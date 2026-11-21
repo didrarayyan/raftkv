@@ -11,6 +11,34 @@
 //!
 //! Deliberately omitted:
 //! - Any disk I/O, networking, leases, TTLs, watches, or multi-key transactions.
+//!
+//! # Examples
+//!
+//! ```
+//! # fn main() -> Result<(), Box<dyn std::error::Error>> {
+//! use bytes::Bytes;
+//! use raft_core::{Index, Payload};
+//! use raftkv_kv::{Applied, Command, KvStore, Op, OpResult};
+//!
+//! let mut store = KvStore::new();
+//! let cmd = Command {
+//!     client_id: 42,
+//!     request_id: 1,
+//!     op: Op::Put {
+//!         key: Bytes::from_static(b"region"),
+//!         value: Bytes::from_static(b"us-east"),
+//!     },
+//! };
+//! let payload = Payload::Command(cmd.encode());
+//! assert_eq!(store.apply(Index(1), &payload)?, Applied::Done(OpResult::Put));
+//! assert_eq!(store.apply(Index(2), &payload)?, Applied::Duplicate(OpResult::Put));
+//!
+//! let mut restored = KvStore::new();
+//! restored.restore(store.applied_index(), &store.snapshot())?;
+//! assert_eq!(restored.get(b"region").map(Bytes::as_ref), Some(b"us-east".as_slice()));
+//! # Ok(())
+//! # }
+//! ```
 
 #![forbid(unsafe_code)]
 

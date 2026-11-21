@@ -4,6 +4,10 @@ version.workspace = true
 edition.workspace = true
 license.workspace = true
 rust-version.workspace = true
+repository.workspace = true
+keywords.workspace = true
+categories.workspace = true
+description = "Deterministic discrete-event fault simulator, nemesis, and linearizability checker for raftkv"
 
 [[bin]]
 name = "raft-sim"
